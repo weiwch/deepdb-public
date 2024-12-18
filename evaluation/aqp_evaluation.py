@@ -6,6 +6,7 @@ from time import perf_counter
 import numpy as np
 
 import math
+import re
 
 from ensemble_compilation.physical_db import DBConnection
 from ensemble_compilation.spn_ensemble import read_ensemble
@@ -112,78 +113,104 @@ def evaluate_aqp_queries(ensemble_location, query_filename, target_path, schema,
     with open(query_filename) as f:
         queries = f.readlines()
     # read ground truth
-    with open(ground_truth_path, 'rb') as handle:
-        ground_truth = pickle.load(handle)
-
+    # with open(ground_truth_path, 'rb') as handle:
+    #     ground_truth = pickle.load(handle)
+    ground_truth = None
     for query_no, query_str in enumerate(queries):
+        
+        # print(query_no, query_str)
+        prefix_query = query_str.split("||")[0]
+        
+        query_str = prefix_query.split(":")[1].strip()
+        
+        print(query_str)
+        
+        pattern = r"select (.*) from ([\s\S]*;)"
+        match = re.search(pattern, query_str)
+        print(match.group(1), match.group(2))
+        agg_str = match.group(1)
+        agg_list = [x.strip() for x in agg_str.split(",")]
+        sql_fmt = "select {} from {}"
+        
+        res = []
+    
+        for agg in agg_list:
+            if agg.startswith("max") or agg.startswith("min"):
+                res.append("-1")
+                continue
+            
+            sql = sql_fmt.format(agg, match.group(2))
+            
+            logger.info(f"Evaluating AQP query {query_no}: {sql}")
 
-        query_str = query_str.strip()
-        logger.info(f"Evaluating AQP query {query_no}: {query_str}")
+            query = parse_query(sql, schema)
+            aqp_start_t = perf_counter()
+            confidence_intervals, aqp_result = spn_ensemble.evaluate_query(query, rdc_spn_selection=rdc_spn_selection,
+                                                                        pairwise_rdc_path=pairwise_rdc_path,
+                                                                        merge_indicator_exp=merge_indicator_exp,
+                                                                        max_variants=max_variants,
+                                                                        exploit_overlapping=exploit_overlapping,
+                                                                        debug=debug,
+                                                                        confidence_intervals=show_confidence_intervals)
+            aqp_end_t = perf_counter()
+            latency = aqp_end_t - aqp_start_t
+            logger.info(f"\t\t{'total_time:':<32}{latency} secs")
+            res.append(aqp_result)
+            if ground_truth is not None:
+                true_result = ground_truth[query_no]
+                if isinstance(aqp_result, list):
 
-        query = parse_query(query_str.strip(), schema)
-        aqp_start_t = perf_counter()
-        confidence_intervals, aqp_result = spn_ensemble.evaluate_query(query, rdc_spn_selection=rdc_spn_selection,
-                                                                       pairwise_rdc_path=pairwise_rdc_path,
-                                                                       merge_indicator_exp=merge_indicator_exp,
-                                                                       max_variants=max_variants,
-                                                                       exploit_overlapping=exploit_overlapping,
-                                                                       debug=debug,
-                                                                       confidence_intervals=show_confidence_intervals)
-        aqp_end_t = perf_counter()
-        latency = aqp_end_t - aqp_start_t
-        logger.info(f"\t\t{'total_time:':<32}{latency} secs")
+                    average_relative_error, bin_completeness, false_bin_percentage, total_bins, \
+                    confidence_interval_precision, confidence_interval_length, _ = \
+                        evaluate_group_by(aqp_result, true_result, confidence_intervals)
 
-        if ground_truth is not None:
-            true_result = ground_truth[query_no]
-            if isinstance(aqp_result, list):
+                    logger.info(f"\t\t{'total_bins: ':<32}{total_bins}")
+                    logger.info(f"\t\t{'bin_completeness: ':<32}{bin_completeness * 100:.2f}%")
+                    logger.info(f"\t\t{'average_relative_error: ':<32}{average_relative_error * 100:.2f}%")
+                    logger.info(f"\t\t{'false_bin_percentage: ':<32}{false_bin_percentage * 100:.2f}%")
+                    if show_confidence_intervals:
+                        logger.info(
+                            f"\t\t{'confidence_interval_precision: ':<32}{confidence_interval_precision * 100:>.2f}%")
+                        logger.info(f"\t\t{'confidence_interval_length: ':<32}{confidence_interval_length * 100:>.2f}%")
 
-                average_relative_error, bin_completeness, false_bin_percentage, total_bins, \
-                confidence_interval_precision, confidence_interval_length, _ = \
-                    evaluate_group_by(aqp_result, true_result, confidence_intervals)
+                else:
 
-                logger.info(f"\t\t{'total_bins: ':<32}{total_bins}")
-                logger.info(f"\t\t{'bin_completeness: ':<32}{bin_completeness * 100:.2f}%")
-                logger.info(f"\t\t{'average_relative_error: ':<32}{average_relative_error * 100:.2f}%")
-                logger.info(f"\t\t{'false_bin_percentage: ':<32}{false_bin_percentage * 100:.2f}%")
-                if show_confidence_intervals:
-                    logger.info(
-                        f"\t\t{'confidence_interval_precision: ':<32}{confidence_interval_precision * 100:>.2f}%")
-                    logger.info(f"\t\t{'confidence_interval_length: ':<32}{confidence_interval_length * 100:>.2f}%")
+                    true_result = true_result[0][0]
+                    predicted_value = aqp_result
 
+                    logger.info(f"\t\t{'predicted:':<32}{predicted_value}")
+                    logger.info(f"\t\t{'true:':<32}{true_result}")
+                    # logger.info(f"\t\t{'confidence_interval:':<32}{confidence_intervals}")
+                    relative_error = compute_relative_error(true_result, predicted_value)
+                    logger.info(f"\t\t{'relative_error:':<32}{relative_error * 100:.2f}%")
+                    if show_confidence_intervals:
+                        confidence_interval_precision, confidence_interval_length = evaluate_confidence_interval(
+                            confidence_intervals,
+                            true_result,
+                            predicted_value)
+                        logger.info(
+                            f"\t\t{'confidence_interval_precision:':<32}{confidence_interval_precision * 100:>.2f}")
+                        logger.info(f"\t\t{'confidence_interval_length: ':<32}{confidence_interval_length * 100:>.2f}%")
+                    total_bins = 1
+                    bin_completeness = 1
+                    average_relative_error = relative_error
+                csv_rows.append({'approach': ApproachType.MODEL_BASED,
+                                'query_no': query_no,
+                                'latency': latency,
+                                'average_relative_error': average_relative_error * 100,
+                                'bin_completeness': bin_completeness * 100,
+                                'total_bins': total_bins,
+                                'query': query_str,
+                                'sample_percentage': 100
+                                })
             else:
+                logger.info(f"\t\tpredicted: {aqp_result}")
 
-                true_result = true_result[0][0]
-                predicted_value = aqp_result
-
-                logger.info(f"\t\t{'predicted:':<32}{predicted_value}")
-                logger.info(f"\t\t{'true:':<32}{true_result}")
-                # logger.info(f"\t\t{'confidence_interval:':<32}{confidence_intervals}")
-                relative_error = compute_relative_error(true_result, predicted_value)
-                logger.info(f"\t\t{'relative_error:':<32}{relative_error * 100:.2f}%")
-                if show_confidence_intervals:
-                    confidence_interval_precision, confidence_interval_length = evaluate_confidence_interval(
-                        confidence_intervals,
-                        true_result,
-                        predicted_value)
-                    logger.info(
-                        f"\t\t{'confidence_interval_precision:':<32}{confidence_interval_precision * 100:>.2f}")
-                    logger.info(f"\t\t{'confidence_interval_length: ':<32}{confidence_interval_length * 100:>.2f}%")
-                total_bins = 1
-                bin_completeness = 1
-                average_relative_error = relative_error
-            csv_rows.append({'approach': ApproachType.MODEL_BASED,
-                             'query_no': query_no,
-                             'latency': latency,
-                             'average_relative_error': average_relative_error * 100,
-                             'bin_completeness': bin_completeness * 100,
-                             'total_bins': total_bins,
-                             'query': query_str,
-                             'sample_percentage': 100
-                             })
-        else:
-            logger.info(f"\t\tpredicted: {aqp_result}")
-
-    save_csv(csv_rows, target_path)
+        str_res = prefix_query.strip()+"||"+",".join(map(str, res))+"||\n"
+        print(str_res)
+        with open(target_path, "a") as f:
+            f.write(str_res)
+    # save_csv(csv_rows, target_path)
 
 
 def evaluate_confidence_interval(confidence_interval, true_result, predicted):

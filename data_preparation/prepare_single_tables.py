@@ -13,7 +13,7 @@ def read_table_csv(table_obj, csv_seperator=','):
     Reads csv from path, renames columns and drops unnecessary columns
     """
     df_rows = pd.read_csv(table_obj.csv_file_location, header=None, escapechar='\\', encoding='utf-8', quotechar='"',
-                          sep=csv_seperator)
+                          sep=csv_seperator, skiprows=1)
     df_rows.columns = [table_obj.table_name + '.' + attr for attr in table_obj.attributes]
 
     for attribute in table_obj.irrelevant_attributes:

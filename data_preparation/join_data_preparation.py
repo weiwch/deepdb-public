@@ -190,6 +190,7 @@ class JoinDataPreparator:
         assert single_table is not None or relationship_list is not None, "Provide either table or set of relations"
 
         if single_table is not None:
+            print(single_table, self.table_meta_data)
             return min(self.table_meta_data[single_table]['length'] * self._sampling_rate(single_table),
                        self.max_table_data), \
                    self.table_meta_data[single_table]['length']

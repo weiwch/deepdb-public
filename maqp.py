@@ -17,6 +17,7 @@ from schemas.flights.schema import gen_flights_1B_schema
 from schemas.imdb.schema import gen_job_light_imdb_schema
 from schemas.ssb.schema import gen_500gb_ssb_schema
 from schemas.tpc_ds.schema import gen_1t_tpc_ds_schema
+from schemas.dynamic_single import dynamic_single_table
 
 np.random.seed(1)
 
@@ -122,7 +123,8 @@ if __name__ == '__main__':
     elif args.dataset == 'tpc-ds-1t':
         schema = gen_1t_tpc_ds_schema(table_csv_path)
     else:
-        raise ValueError('Dataset unknown')
+        schema = dynamic_single_table(args.dataset.split(".")[0], table_csv_path)
+        # raise ValueError('Dataset unknown')
 
     # Generate HDF files for simpler sampling
     if args.generate_hdf:
